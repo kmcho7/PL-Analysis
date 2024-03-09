@@ -1,0 +1,605 @@
+---
+title: "Powerlifting Analysis Project Code"
+author: "Kevin Cho"
+date: "April 2023"
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+Pre-filtered openpowerlifting data for Event = SBD, Equipment = Raw, Single-ply, Tested = Yes, Federation = USAPL. Will perform descriptive analysis using linear regression and prediction peformance using various other models.
+
+### Exploratory Analysis
+
+
+```{r}
+
+library(readxl)
+
+## read in data
+full_df <- read_excel("openpowerlifting_filtered.xlsx");
+head(full_df)
+
+```
+```{r}
+
+## clean up data
+
+# remove division column then remove duplicate rows (duplicates caused by some competitors competing in multiple divisions at the same meet)
+df <- subset(full_df, select=-c(Division, Place)) # remove division column
+df <- df[!duplicated(df),] # remove duplicate rows
+
+# create binary dummy variable for Sex and Equipment
+Sex01 = as.integer(I(df$Sex == "M"))
+Equipment01 = as.integer(I(df$Equipment == "Single-ply"))
+
+# select columns of interest
+df <- subset(df, select=c(Age, BodyweightKg, Best3SquatKg, Best3BenchKg, Best3DeadliftKg))
+df <- data.frame(Sex01, Equipment01, df)
+head(df)
+
+
+
+```
+
+
+Exploratory data analysis:
+```{r}
+
+## Exploratory Data analysis
+dim(df) # 82183 rows, 7 columns
+
+summary(df);
+
+# create boxplots for categorical variables with response
+par(mfrow = c(1, 2))  
+boxplot(Best3DeadliftKg~Sex01, data=df)
+boxplot(Best3DeadliftKg~Equipment01, data=df)
+
+# make heatmap of correlation matrix
+# reference code: http://www.sthda.com/english/wiki/
+# ggplot2-quick-correlation-matrix-heatmap-r-software-and-data-visualization
+library(reshape2)
+library(ggplot2)
+
+cormat <- round(cor(df[3:7]),2) # only quantitative variables
+cormat # correlation matrix
+
+melted_cormat <- melt(cormat)
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+
+```
+
+
+
+```{r}
+
+## run linear regression for descriptive analysis
+
+PL_lm <- lm(Best3DeadliftKg~., data=df)
+summary(PL_lm)
+
+
+MSE_lm <- mean( (resid(PL_lm) )^2)
+MSE_lm
+
+
+pred1a <- predict(PL_lm, df[,1:6]);
+head(format(df[,7]-pred1a, scientific=F))
+```
+
+```{r}
+
+## check outliers with Cook's distance
+cook=cooks.distance(PL_lm)
+
+plot(cook)
+abline(h=1, col="red")
+
+df[which(cook > 1),]
+
+
+## calculate VIF to check for multicollinearity
+library(car)
+vif(PL_lm)
+
+threshold <- max(10, 1/(1-summary(PL_lm)$r.squared))
+cat("\nThe VIF threshold is:",threshold)
+
+```
+
+```{r}
+
+## plot residuals vs quantitative predictors to check linearity assumption
+
+resids = rstandard(PL_lm)
+par(mfrow=c(2,2))
+# Age
+plot(df$Age, resids)
+abline(h=0, col="red")
+lines(lowess(df$Age, resids), col='blue')
+# BodyweightKg
+plot(df$BodyweightKg, resids)
+abline(h=0, col="red")
+lines(lowess(df$BodyweightKg, resids), col='blue')
+# Best3SquatKg
+plot(df$Best3SquatKg, resids)
+abline(h=0, col="red")
+lines(lowess(df$Best3SquatKg, resids), col='blue')
+# Best3BenchKg
+plot(df$Best3BenchKg, resids)
+abline(h=0, col="red")
+lines(lowess(df$Best3BenchKg, resids), col='blue')
+
+
+```
+
+``` {r}
+
+## plot residuals vs fitted values to check constant variance assumption
+
+plot(PL_lm$fitted, resids)
+abline(h = 0)
+lines(lowess(PL_lm$fitted, resids), col='blue')
+
+```
+
+``` {r}
+
+## check normality assumption
+
+# histogram
+hist(resids, xlab="Residuals", main= "Histogram of Residuals")
+# qq-plot
+qqPlot(resids)
+
+```
+
+### Build and compare other models
+
+``` {r}
+
+### set seed and split data to training/test
+set.seed(7406)
+n = dim(df)[1];      ### total number of observations (82183)
+n1 = round(n*0.3);     ### number of observations randomly selected for testing data (24655); 30%
+
+
+### randomly select n1 observations as a new training  subset (without replacement)
+flag <- sort(sample(1:n, n1)); # sampled without replacement
+pl1train = df[-flag,];
+pl1test  = df[flag,];
+
+##     Create empty df to store training and test errors
+errors_df <- data.frame(Model = character(), Train_MSE = double(), Test_MSE = double())
+ytrue <- pl1test$Best3DeadliftKg; # true response values of test data
+
+###
+### (1) Linear regression with all predictors (Full Model)
+###     This fits a full linear regression model on the training data
+model1 <- lm( Best3DeadliftKg ~ ., data = pl1train); 
+
+## Model 1: Training error
+MSEmod1train <-   mean( (resid(model1) )^2);
+# Model 1: testing error 
+pred1a <- predict(model1, pl1test[,1:6]);
+MSEmod1test <-   mean((pred1a - ytrue)^2);
+
+errors_df[1,] = c("LM w/ all predictors", MSEmod1train, MSEmod1test)
+summary(model1)
+
+### (2) Linear regression with the best subset model 
+library(leaps);
+pl.leaps <- regsubsets(Best3DeadliftKg ~ ., data= pl1train, nbest= 100, really.big= TRUE); 
+
+## Record useful information from the output
+pl.models <- summary(pl.leaps)$which;
+pl.models.size <- as.numeric(attr(pl.models, "dimnames")[[1]]);
+pl.models.rss <- summary(pl.leaps)$rss;
+
+# What is the best subset with k=4
+op2 <- which(pl.models.size == 4); 
+flag2 <- op2[which.min(pl.models.rss[op2])]; 
+
+## Auto-find the best subset
+mod2selectedmodel <- pl.models[flag2,]; 
+mod2Xname <- paste(names(mod2selectedmodel)[mod2selectedmodel][-1], collapse="+"); 
+mod2form <- paste ("Best3DeadliftKg ~", mod2Xname);
+## fit to the best subset model
+model2 <- lm( as.formula(mod2form), data= pl1train); 
+## Model 2: training error 
+MSEmod2train <- mean(resid(model2)^2);
+## Model 2:  testing error 
+pred2 <- predict(model2, pl1test[,1:6]);
+MSEmod2test <-   mean((pred2 - ytrue)^2);
+
+errors_df[2,] = c("LM with k=4 best predictors", MSEmod2train, MSEmod2test)
+summary(model2)
+
+
+### (3) Linear regression with the stepwise variable selection 
+###     that minimizes the AIC criterion 
+##    This can done by using the "step()" function in R, 
+
+model3  <- step(model1, direction="both", k=2, trace=0); 
+
+## If want to see the coefficients of model3
+# round(coef(model3),3)
+# summary(model3)
+
+## Model 3: training  and  testing errors
+# training
+MSEmod3train <- mean(resid(model3)^2);
+# test
+pred3 <- predict(model3, pl1test[,1:6]);
+MSEmod3test <-   mean((pred3 - ytrue)^2);
+
+errors_df[3,] = c("LM with stepwise AIC", MSEmod3train, MSEmod3test)
+summary(model3)
+
+
+### Model (4): LASSO 
+library(lars)
+pl.lars <- lars( as.matrix(pl1train[,1:6]), pl1train[,7], type= "lasso", trace= TRUE);
+
+## Choose the optimal \lambda value that minimizes Mellon's Cp criterion 
+Cp1  <- summary(pl.lars)$Cp;
+index1 <- which.min(Cp1);
+
+## Get the coefficients via prediction function 
+lasso.lambda <- pl.lars$lambda[index1]
+lasso.lambda[is.na(lasso.lambda)] <- 0 # manually set lambda to 0 if NA
+lasso.lambda
+coef.lars1 <- predict(pl.lars, s=lasso.lambda, type="coef", mode="lambda")
+## Get intercept value 
+##  \beta0 = mean(Y) - mean(X)*\beta of training data
+LASSOintercept = mean(pl1train[,7]) -sum( coef.lars1$coef  * colMeans(pl1train[,1:6] ));
+
+## Model 4:  training error for lasso
+## 
+pred4train  <- predict(pl.lars, as.matrix(pl1train[,1:6]), s=lasso.lambda, type="fit", mode="lambda");
+yhat4train <- pred4train$fit; 
+MSEmod4train <- mean((yhat4train - pl1train$Best3DeadliftKg)^2); 
+## Model 4:  testing error for lasso  
+pred4test <- predict(pl.lars, as.matrix(pl1test[,1:6]), s=lasso.lambda, type="fit", mode="lambda");
+yhat4test <- pred4test$fit; 
+MSEmod4test <- mean( (yhat4test - ytrue)^2); 
+
+errors_df[4,] = c("LASSO Regression", MSEmod4train, MSEmod4test)
+c(LASSOintercept, coef.lars1$coef) # regression coefficients for model 4
+
+### (5) Ridge regression
+library(MASS);
+
+## The following R code gives the ridge regression for all penalty function lamdba
+pl.ridge <- lm.ridge( Best3DeadliftKg ~ ., data = pl1train, lambda= seq(0,100,0.1));
+
+## We need to select the ridge regression model with the optimal lambda value 
+## Auto-find the "index" for the optimal lambda value for Ridge regression 
+## and auto-compute the corresponding testing and testing error 
+indexopt <-  which.min(pl.ridge$GCV);
+indexopt
+
+## If want to check corresponding coefficients with respect to the optimal "index"
+# pl.ridge$coef[,indexopt]
+
+## Coefficients are for the the scaled/normalized data so need to transform back to original space
+## Y = X \beta + \epsilon, and find the estimated \beta value for this "optimal" Ridge Regression Model
+## For the estimated \beta, we need to sparate \beta_0 (intercept) with other \beta's
+ridge.coeffs = pl.ridge$coef[,indexopt]/ pl.ridge$scales;
+intercept = -sum( ridge.coeffs  * colMeans(pl1train[,1:6] )  )+ mean(pl1train[,7]);
+
+## If want to see the coefficients estimated from the Ridge Regression on the original data scale
+# c(intercept, ridge.coeffs);
+
+## Model 5 (Ridge): training errors 
+yhat5train <- as.matrix( pl1train[,1:6]) %*% as.vector(ridge.coeffs) + intercept;
+MSEmod5train <- mean((yhat5train - pl1train$Best3DeadliftKg)^2); 
+## Model 5 (Ridge):  testing errors in the subset "test" 
+pred5test <- as.matrix( pl1test[,1:6]) %*% as.vector(ridge.coeffs) + intercept;
+MSEmod5test <-  mean((pred5test - ytrue)^2); 
+
+errors_df[5,] = c("Ridge Regression", MSEmod5train, MSEmod5test)
+c(intercept, ridge.coeffs); # regression coefficients for model 5
+
+
+errors_df
+```
+
+Partial F-tests
+```{r}
+## The best subset with k=4 predictors excludes Age and BodyweightKg
+## Want to test null hypothesis both coefficients for these predictors are zero
+
+anova(model2, model1)
+# p-value is <0.05 so we can reject the null hypothesis that coefficients for both Age and BodyweightKg are zero
+# therefore atleast one of the variables has a non-zero coefficient
+
+
+## Now perform additional partial f-test on Age and BodyweightKg individually
+
+# Partial F-test on Age
+model6 <- lm( Best3DeadliftKg ~. -Age, data = pl1train);
+anova(model6, model1) # p-value is <0.05; Age has predictive power although small
+
+# Partial F-test on BodyweightKg
+model7 <- lm( Best3DeadliftKg ~. -BodyweightKg, data = pl1train);
+anova(model7, model1) # p-value is <0.05; BodyweightKg has predictive power although small
+
+
+```
+
+Monte Carlo CV
+```{r}
+
+set.seed(7406);   ### set the seed for randomization
+n = dim(df)[1];      ### total number of observations (252)
+n1 = round(n*0.3);     ### number of observations randomly selected for testing data (76); 30%
+
+
+B= 10;            ### number of loops
+TEALL = NULL;      ### Final TE values
+
+for (b in 1:B){
+  ### randomly select n1 observations as a new training  subset in each loop (without replacement)
+  flag <- sort(sample(1:n, n1)); # sampled without replacement
+  pl1train <- df[-flag,];  ## temp training set for CV
+  pl1test  <- df[flag,]; ## temp testing set for CV
+  ### fit each model to "pl1train" then get the testing error (TE) values on "pltest"
+  
+  ytrue <- pl1test$Best3DeadliftKg
+  
+  ### (1) Linear regression with all predictors (Full Model)
+  model1 <- lm( Best3DeadliftKg ~ ., data = pl1train); 
+  pred1a <- predict(model1, pl1test[,1:6]);
+  te1 <-   mean((pred1a - ytrue)^2);
+  
+  ### (2) Linear regression with the best subset model 
+  pl.leaps <- regsubsets(Best3DeadliftKg ~ ., data= pl1train, nbest= 100, really.big= TRUE); 
+  ## Record useful information from the output
+  pl.models <- summary(pl.leaps)$which;
+  pl.models.size <- as.numeric(attr(pl.models, "dimnames")[[1]]);
+  pl.models.rss <- summary(pl.leaps)$rss;
+  ## What is the best subset with k=4
+  op2 <- which(pl.models.size == 4); 
+  flag2 <- op2[which.min(pl.models.rss[op2])]; 
+  ## Auto-find the best subset
+  mod2selectedmodel <- pl.models[flag2,]; 
+  mod2Xname <- paste(names(mod2selectedmodel)[mod2selectedmodel][-1], collapse="+"); 
+  mod2form <- paste ("Best3DeadliftKg ~", mod2Xname);
+  ## To auto-fit the best subset model to the data
+  model2 <- lm( as.formula(mod2form), data= pl1train); 
+  ## Model 2:  testing error 
+  pred2 <- predict(model2, pl1test[,1:6]);
+  te2 <-   mean((pred2 - ytrue)^2);
+  
+  ### (3) Linear regression with the stepwise variable selection 
+  ###     that minimizes the AIC criterion 
+  model3  <- step(model1, direction="both", k=2, trace=0); 
+  pred3 <- predict(model3, pl1test[,1:6]);
+  te3 <-   mean((pred3 - ytrue)^2);
+  
+  ### (4) LASSO 
+  pl.lars <- lars( as.matrix(pl1train[,1:6]), pl1train[,7], type= "lasso", trace= FALSE);
+  ## Choose the optimal \lambda value that minimizes Mellon's Cp criterion 
+  Cp1  <- summary(pl.lars)$Cp;
+  index1 <- which.min(Cp1);
+  ## Get beta coefficients
+  lasso.lambda <- pl.lars$lambda[index1]
+  lasso.lambda[is.na(lasso.lambda)] <- 0 # manually set lambda to 0 if NA
+  coef.lars1 <- predict(pl.lars, s=lasso.lambda, type="coef", mode="lambda")
+  ## Get intercept value
+  LASSOintercept = mean(pl1train[,7]) -sum( coef.lars1$coef  * colMeans(pl1train[,1:6] ));
+  ## Model 4:  testing error for lasso  
+  pred4test <- predict(pl.lars, as.matrix(pl1test[,1:6]), s=lasso.lambda, type="fit", mode="lambda");
+  yhat4test <- pred4test$fit; 
+  te4 <- mean( (yhat4test - ytrue)^2);
+  
+  ### (5) Ridge regression (MASS: lm.ridge, mda: gen.ridge)
+  ## Ridge regression for all penalty function lamdba
+  pl.ridge <- lm.ridge( Best3DeadliftKg ~ ., data = pl1train, lambda= seq(0,100,0.1));
+  ## Select the ridge regression model with the optimal lambda value 
+  indexopt <-  which.min(pl.ridge$GCV);  
+  ## Convert back to original scale
+  ridge.coeffs = pl.ridge$coef[,indexopt]/ pl.ridge$scales;
+  intercept = -sum( ridge.coeffs  * colMeans(pl1train[,1:6] )  )+ mean(pl1train[,7]);
+  ## Model 5 (Ridge):  testing errors in the subset "test" 
+  pred5test <- as.matrix( pl1test[,1:6]) %*% as.vector(ridge.coeffs) + intercept;
+  te5 <-  mean((pred5test - ytrue)^2); 
+  
+  TEALL = rbind( TEALL, cbind(te1, te2, te3, te4, te5) );
+}
+
+
+
+dim(TEALL);  ### This should be a Bx5 matrices
+### Change the column name of TEALL
+colnames(TEALL) <- c("mod1", "mod2", "mod3", "mod4", "mod5");
+
+## Report the sample mean and sample variances for the seven models
+CVerror <- apply(TEALL, 2, mean);
+CVerror
+CVvariance <- apply(TEALL, 2, var);
+CVvariance
+
+```
+
+
+Table and plot of MSE so far
+```{r}
+
+# add CV error and variance to error_df
+errors_df$CV_MSE <- CVerror
+errors_df$CV_variance <- CVvariance
+errors_df[,2:3] <- as.data.frame(lapply(errors_df[,2:3], as.numeric))
+errors_df[,2:5] <- round(errors_df[,2:5], 4) # round to 4 digits
+errors_df
+
+# plot all errors on a single plot
+
+plot(errors_df$Test_MSE, type="b", col="red", xlim=c(1,5), ylim = c(380,390), xlab="Model", ylab="MSE")
+lines(errors_df$CV_MSE, type="b", col="blue")
+title("MSE vs Model")
+legend("bottomright", legend=c("Test MSE", "CV MSE"), col=c("red", "blue"), lty=1)
+
+```
+
+Random Forest (Tuning in subsequent blocks)
+```{r}
+
+library(randomForest)
+library(caret)
+
+### set seed and split data to training/test
+set.seed(7406)
+n = dim(df)[1];      ### total number of observations (82183)
+n1 = round(n*0.3);     ### number of observations randomly selected for testing data (24655); 30%
+
+### randomly select n1 observations as a new training  subset
+flag <- sort(sample(1:n, n1)); # sampled without replacement
+pl1train = df[-flag,];
+pl1test  = df[flag,];
+
+
+##Create random forest with optimal hyperparameters
+#ntree = number of tress to grow, and the default is 500. 
+#mtry = number of variables randomly sampled as candidates at each split. 
+#          The default is sqrt(p) for classfication and p/3 for regression
+#nodesize = minimum size of terminal nodes. 
+#           The default value is 1 for classification and 5 for regression
+
+rf1 <- randomForest(Best3DeadliftKg ~., data=pl1train, ntree=500, 
+                    mtry=3, nodesize=1000, importance=TRUE)
+
+
+## Check Important variables
+importance(rf1)
+## There are two types of importance measure 
+##  (1=mean decrease in accuracy, 
+##   2= mean decrease in node impurity)
+importance(rf1, type=2)
+varImpPlot(rf1)
+
+## The training error of this new randomForest 
+rf.pred1train <- predict(rf1, pl1train)
+MSErf1train <- mean((rf.pred1train - pl1train$Best3DeadliftKg)^2)
+MSErf1train
+
+## The training error of this new randomForest 
+rf.pred1test <- predict(rf1, pl1test)
+MSErf1test <- mean((rf.pred1test - pl1test$Best3DeadliftKg)^2)
+MSErf1test
+
+```
+
+Table and plot for all models
+```{r}
+
+# add CV error and variance to error_df
+errors_df[6,1] <- 'Random Forest'
+errors_df[6,2] <- MSErf1train
+errors_df[6,3:4] <- MSErf1test
+errors_df
+
+# plot all errors on a single plot
+
+plot(errors_df$Test_MSE, type="b", col="red", xlim=c(1,6), ylim = c(350,390), xlab="Model", ylab="MSE")
+lines(errors_df$CV_MSE, type="b", col="blue")
+title("MSE vs Model")
+legend("bottomleft", legend=c("Test MSE", "CV MSE"), col=c("red", "blue"), lty=1)
+
+```
+
+Tuning nodesize
+```{r}
+
+library(randomForest)
+library(caret)
+
+### set seed and split data to training/test
+set.seed(7406)
+n = dim(df)[1];      ### total number of observations (82183)
+n1 = round(n*0.3);     ### number of observations randomly selected for testing data (24655); 30%
+
+### randomly select n1 observations as a new training  subset
+flag <- sort(sample(1:n, n1)); # sampled without replacement
+pl1train = df[-flag,];
+pl1test  = df[flag,];
+
+## In general, we need to use a loop to try different parameter
+## values (of ntree, mtry, etc.) to identify the right parameters 
+## that minimize cross-validation errors.
+## Used tuning approach from web as reference: https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/ 
+control <- trainControl(method="repeatedcv", number=3, repeats=1, search="random")
+tunegrid <- expand.grid(.mtry=c(1,3,5))
+
+## find optimal value for nodesize; keep ntree constant as default and loop through nodesize and mtry
+nslist <- list()
+for (s in c(1000, 5000, 10000)) {
+  set.seed(7406)
+  rfCV <- train(pl1train[1:6], pl1train$Best3DeadliftKg,
+                   "rf", metric = 'RMSE', tuneGrid=tunegrid,
+                   trControl = control, nodesize=s)
+  
+  key <- toString(s)
+  nslist[[key]] <- rfCV
+
+}
+
+ns_results <- resamples(nslist)
+summary(ns_results)
+dotplot(ns_results)
+
+```
+
+Tuning ntree
+``` {r}
+
+## find optimal value for ntree; keep nodesize=1000 (optimal value) and loop through ntrees and mtry
+ntrlist <- list()
+for (n in c(100, 300, 500)) {
+  set.seed(7406)
+  rfCV <- train(pl1train[1:6], pl1train$Best3DeadliftKg,
+                   "rf", metric = 'RMSE', tuneGrid=tunegrid,
+                   trControl = control, nodesize=1000, ntree=n)
+  
+  key <- toString(n)
+  ntrlist[[key]] <- rfCV
+
+}
+
+ntr_results <- resamples(ntrlist)
+summary(ntr_results)
+dotplot(ntr_results)
+
+```
+
+Tuning mtry
+```{r}
+## find optimal value for mtry
+rfCV <- train(pl1train[1:6], pl1train$Best3DeadliftKg,
+                   "rf", metric = 'RMSE', tuneGrid=tunegrid,
+                   trControl = control, nodesize=1000, ntree=500)
+
+print(rfCV)
+plot(rfCV)
+
+```
+
